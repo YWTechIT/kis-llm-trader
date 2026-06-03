@@ -64,7 +64,8 @@ class DiscordNotifier:
 
     # ── 이벤트별 헬퍼 ──
     def order_filled(self, *, side: str, code: str, name: str, qty: int,
-                     price: int, reason: str, signal: str = "", rule: str = "") -> None:
+                     price: int, reason: str, signal: str = "", rule: str = "",
+                     balance: dict | None = None) -> None:
         kind = "buy" if side == "buy" else "sell"
         emoji = "🟢 매수" if side == "buy" else "🟠 매도"
         fields = [
@@ -79,7 +80,23 @@ class DiscordNotifier:
             fields.append({"name": "📋 전략 근거", "value": rule[:1000], "inline": False})
         if not (signal or rule):
             fields.append({"name": "LLM 사유", "value": (reason or "-")[:1000], "inline": False})
+        fields.extend(self._balance_fields(balance))
         self._post(self._embed(f"{emoji} 체결 — {name or code}", kind, fields=fields))
+
+    @staticmethod
+    def _balance_fields(balance: dict | None) -> list[dict]:
+        """매매 후 계좌 잔액 요약 필드. balance가 없으면 빈 리스트."""
+        if not balance:
+            return []
+        fields: list[dict] = []
+        # 잔액 정보는 키가 누락돼도 알림을 막지 않는다.
+        if "cash" in balance:
+            fields.append({"name": "💰 예수금", "value": f"{balance['cash']:,}원", "inline": True})
+        if "available_cash" in balance:
+            fields.append({"name": "주문가능", "value": f"{balance['available_cash']:,}원", "inline": True})
+        if "total_eval" in balance:
+            fields.append({"name": "총평가금액", "value": f"{balance['total_eval']:,}원", "inline": True})
+        return fields
 
     def stop_loss(self, *, code: str, name: str, qty: int, pnl_rate: float,
                   reason: str = "") -> None:

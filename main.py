@@ -183,9 +183,15 @@ class Trader:
             self.discord.stop_loss(code=code, name=name, qty=qty, pnl_rate=pnl_rate,
                                    reason=reason)
         else:
+            # 매매 직후 계좌 잔액을 함께 알린다. 조회 실패는 알림을 막지 않는다.
+            balance: dict | None = None
+            try:
+                balance = self.broker.get_balance()
+            except Exception:  # noqa: BLE001
+                logger.exception("체결 알림용 잔고 조회 실패 — 잔액 생략")
             self.discord.order_filled(side=side, code=code, name=name, qty=qty,
                                       price=price, reason=reason,
-                                      signal=signal, rule=rule)
+                                      signal=signal, rule=rule, balance=balance)
 
     def _daily_summary(self) -> None:
         today = datetime.now().strftime("%Y-%m-%d")
