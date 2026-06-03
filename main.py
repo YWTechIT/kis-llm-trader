@@ -191,7 +191,8 @@ class Trader:
                 logger.exception("체결 알림용 잔고 조회 실패 — 잔액 생략")
             self.discord.order_filled(side=side, code=code, name=name, qty=qty,
                                       price=price, reason=reason,
-                                      signal=signal, rule=rule, balance=balance)
+                                      signal=signal, rule=rule, balance=balance,
+                                      is_paper=self.settings.is_paper)
 
     def _daily_summary(self) -> None:
         today = datetime.now().strftime("%Y-%m-%d")

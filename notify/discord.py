@@ -65,14 +65,17 @@ class DiscordNotifier:
     # ── 이벤트별 헬퍼 ──
     def order_filled(self, *, side: str, code: str, name: str, qty: int,
                      price: int, reason: str, signal: str = "", rule: str = "",
-                     balance: dict | None = None) -> None:
+                     balance: dict | None = None, is_paper: bool | None = None) -> None:
         kind = "buy" if side == "buy" else "sell"
         emoji = "🟢 매수" if side == "buy" else "🟠 매도"
+        env_tag = self._env_tag(is_paper)
         fields = [
             {"name": "종목", "value": f"{name or ''} ({code})", "inline": True},
             {"name": "수량", "value": f"{qty:,}주", "inline": True},
             {"name": "가격", "value": f"{price:,}원", "inline": True},
         ]
+        if env_tag:
+            fields.append({"name": "서버", "value": env_tag, "inline": True})
         # 근거를 명확히 분리 노출(있으면), 없으면 기존 reason 한 줄.
         if signal:
             fields.append({"name": "📈 신호", "value": signal[:1000], "inline": False})
@@ -82,6 +85,13 @@ class DiscordNotifier:
             fields.append({"name": "LLM 사유", "value": (reason or "-")[:1000], "inline": False})
         fields.extend(self._balance_fields(balance))
         self._post(self._embed(f"{emoji} 체결 — {name or code}", kind, fields=fields))
+
+    @staticmethod
+    def _env_tag(is_paper: bool | None) -> str:
+        """매매 서버 구분 라벨. None이면 표기 생략."""
+        if is_paper is None:
+            return ""
+        return "🧪 모의투자" if is_paper else "🔴 실제투자"
 
     @staticmethod
     def _balance_fields(balance: dict | None) -> list[dict]:
