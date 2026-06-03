@@ -87,6 +87,7 @@ class Settings:
     log_file: str               # 상세 로그 파일 경로(로테이션). 비면 파일 로그 비활성.
     # 운용 대상/주기
     watch_codes: list[str]
+    strategy_name: str          # 활성 전략 프리셋 키(strategy/presets.py). 기본 golden_cross.
     decision_interval_min: int
     journal_db: str
     # 가드레일 파라미터
@@ -134,6 +135,17 @@ def load_settings() -> Settings:
     if not watch_codes:
         raise ConfigError("WATCH_CODES 에 관심종목 코드가 최소 1개 필요합니다.")
 
+    # 활성 전략 프리셋. 미등록 키면 침묵 실패 대신 기동을 거부한다.
+    # (presets는 config를 import하지 않으므로 순환 의존 없음)
+    from strategy.presets import DEFAULT_STRATEGY, PRESETS
+
+    strategy_name = os.environ.get("STRATEGY_NAME", DEFAULT_STRATEGY).strip().lower()
+    if strategy_name not in PRESETS:
+        raise ConfigError(
+            f"STRATEGY_NAME='{strategy_name}' 는 등록되지 않은 전략입니다. "
+            f"사용 가능: {', '.join(PRESETS)}"
+        )
+
     # 공식 kis_auth는 svr에 따라 paper_app/my_app 키를 각각 읽으므로,
     # 현재 환경 쪽 키에 실제값을 넣고 반대편은 빈 자리표시자로 둔다.
     kis_yaml = {
@@ -168,6 +180,7 @@ def load_settings() -> Settings:
         log_level=os.environ.get("LOG_LEVEL", "DEBUG").strip().upper() or "DEBUG",
         log_file=os.environ.get("LOG_FILE", "logs/trader.log").strip(),
         watch_codes=watch_codes,
+        strategy_name=strategy_name,
         decision_interval_min=_get_int("DECISION_INTERVAL_MIN", 15),
         journal_db=os.environ.get("JOURNAL_DB", "trader.db").strip() or "trader.db",
         max_order_krw=_get_int("MAX_ORDER_KRW", 100_000),
