@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import Any, Optional
@@ -74,25 +75,30 @@ class Broker:
         # 모의는 초당 호출 제한이 빡빡(EGW00201) → 간격을 넉넉히(≤1콜/초)
         self._min_interval = 1.1 if settings.is_paper else 0.1
         self._last_call_ts = 0.0
+        # 매매 루프(메인 스레드)와 조회 봇(asyncio 스레드)이 같은 Broker를 공유한다.
+        # 모든 KIS REST 호출을 직렬화해 throttle 시계 경쟁/초당 호출제한 위반을 막는다.
+        # 재인증 중첩 호출의 자기교착을 피하려고 RLock 사용.
+        self._lock = threading.RLock()
         self._authed = False
         self._holiday_cache: dict[str, bool] = {}  # {YYYYMMDD: 개장일여부} (1일 1회 조회)
 
     # ── 인증 ──
     def authenticate(self) -> None:
         """기동 시 1회 호출. 실패하면 BrokerError."""
-        try:
-            ka.auth(svr=settings.kis_env)
-        except Exception as exc:  # noqa: BLE001 — 외부 호출 경계
-            self._warn("KIS 인증 실패", f"{type(exc).__name__}: {exc}")
-            raise BrokerError(f"KIS 인증 실패: {exc}") from exc
+        with self._lock:  # _call과 동일 락으로 직렬화(봇 조회와 인증 경쟁 방지)
+            try:
+                ka.auth(svr=settings.kis_env)
+            except Exception as exc:  # noqa: BLE001 — 외부 호출 경계
+                self._warn("KIS 인증 실패", f"{type(exc).__name__}: {exc}")
+                raise BrokerError(f"KIS 인증 실패: {exc}") from exc
 
-        trenv = ka.getTREnv()
-        if not getattr(trenv, "my_acct", ""):
-            # auth()는 실패 시 조용히 반환(print)하므로 환경값으로 성공 여부를 확인
-            self._warn("KIS 인증 실패", "토큰/계좌 환경이 설정되지 않았습니다(.env 확인).")
-            raise BrokerError("KIS 인증 실패: 계좌 환경 미설정")
-        self._authed = True
-        logger.info("KIS 인증 완료 (env=%s)", settings.kis_env)
+            trenv = ka.getTREnv()
+            if not getattr(trenv, "my_acct", ""):
+                # auth()는 실패 시 조용히 반환(print)하므로 환경값으로 성공 여부를 확인
+                self._warn("KIS 인증 실패", "토큰/계좌 환경이 설정되지 않았습니다(.env 확인).")
+                raise BrokerError("KIS 인증 실패: 계좌 환경 미설정")
+            self._authed = True
+            logger.info("KIS 인증 완료 (env=%s)", settings.kis_env)
 
     @property
     def _account(self) -> tuple[str, str]:
@@ -107,31 +113,35 @@ class Broker:
         self._last_call_ts = time.monotonic()
 
     def _call(self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        last_exc: Optional[Exception] = None
-        for attempt in range(1, self._max_retries + 1):
-            self._throttle()
-            try:
-                return fn(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 — 외부 호출 경계
-                last_exc = exc
-                msg = str(exc).lower()
-                is_auth = any(h.lower() in msg for h in _AUTH_ERROR_HINTS)
-                is_rate = any(h.lower() in msg for h in _RATE_LIMIT_HINTS)
-                logger.warning(
-                    "%s 실패 (%d/%d): %s%s",
-                    label, attempt, self._max_retries, exc,
-                    " [재인증 시도]" if is_auth else (" [rate limit]" if is_rate else ""),
-                )
-                if is_auth:
-                    try:
-                        ka.auth(svr=settings.kis_env)
-                    except Exception:  # noqa: BLE001
-                        pass
-                # rate limit이면 더 길게 쉰다(초당 제한 회복 대기)
-                base = 1.5 if is_rate else 0.5
-                time.sleep(min(2 ** attempt * base, 8.0))  # 지수 backoff (상한 8s)
-        self._warn(f"{label} 반복 실패", f"{type(last_exc).__name__}: {last_exc}")
-        raise BrokerError(f"{label} 실패: {last_exc}") from last_exc
+        # 모든 KIS REST 호출의 단일 관문. 락으로 감싸 매매 루프/조회 봇이 동시에 호출해도
+        # throttle·backoff가 섞이지 않고 초당 호출제한을 지킨다. 락은 한 호출(재시도 포함)
+        # 동안만 잡는다 — 봇이 매매 사이클 중 잠깐 대기할 수 있으나 한도 위반보다 안전하다.
+        with self._lock:
+            last_exc: Optional[Exception] = None
+            for attempt in range(1, self._max_retries + 1):
+                self._throttle()
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 — 외부 호출 경계
+                    last_exc = exc
+                    msg = str(exc).lower()
+                    is_auth = any(h.lower() in msg for h in _AUTH_ERROR_HINTS)
+                    is_rate = any(h.lower() in msg for h in _RATE_LIMIT_HINTS)
+                    logger.warning(
+                        "%s 실패 (%d/%d): %s%s",
+                        label, attempt, self._max_retries, exc,
+                        " [재인증 시도]" if is_auth else (" [rate limit]" if is_rate else ""),
+                    )
+                    if is_auth:
+                        try:
+                            ka.auth(svr=settings.kis_env)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # rate limit이면 더 길게 쉰다(초당 제한 회복 대기)
+                    base = 1.5 if is_rate else 0.5
+                    time.sleep(min(2 ** attempt * base, 8.0))  # 지수 backoff (상한 8s)
+            self._warn(f"{label} 반복 실패", f"{type(last_exc).__name__}: {last_exc}")
+            raise BrokerError(f"{label} 실패: {last_exc}") from last_exc
 
     def _warn(self, title: str, message: str) -> None:
         logger.error("%s — %s", title, message)
@@ -209,6 +219,40 @@ class Broker:
             "positions": positions,
         }
 
+    def get_orderable_cash(self, code: str, price: int = 0) -> dict:
+        """매수가능 금액/수량 조회 (inquire_psbl_order).
+
+        ord_dvsn='01'(시장가)로 호출해야 종목증거금율이 반영된 가능수량이 나온다(벤더 권고).
+        price=0이면 시장가 기준으로 조회한다.
+        반환: {code, nrcvb_buy_amt(미수없는 매수금액), max_buy_amt(최대 매수금액),
+              nrcvb_buy_qty(미수없는 매수수량), max_buy_qty(최대 매수수량), ord_unpr}.
+        실패 시 BrokerError (상위에서 처리). 빈 응답도 BrokerError.
+        """
+        cano, prod = self._account
+        df = self._call(
+            f"get_orderable_cash({code})",
+            kb.inquire_psbl_order,
+            env_dv=self._env,
+            cano=cano,
+            acnt_prdt_cd=prod,
+            pdno=code,
+            ord_unpr=str(int(price)),   # 시장가 가능수량 조회 시 0 허용
+            ord_dvsn="01",              # 01:시장가 — 증거금율 반영(벤더 docstring 권고)
+            cma_evlu_amt_icld_yn="N",
+            ovrs_icld_yn="N",
+        )
+        row = _first_row(df)
+        if not row:
+            raise BrokerError(f"get_orderable_cash({code}): 빈 응답")
+        return {
+            "code": code,
+            "nrcvb_buy_amt": _to_int(row.get("nrcvb_buy_amt")),
+            "max_buy_amt": _to_int(row.get("max_buy_amt")),
+            "nrcvb_buy_qty": _to_int(row.get("nrcvb_buy_qty")),
+            "max_buy_qty": _to_int(row.get("max_buy_qty")),
+            "ord_unpr": int(price),
+        }
+
     def place_order(self, code: str, side: str, qty: int, *, market: bool = True,
                     price: int = 0) -> dict:
         """주문 전송. side: 'buy'|'sell'. 기본 시장가.
@@ -283,6 +327,37 @@ class Broker:
                     "filled_amt": _to_int(row.get("tot_ccld_amt")),
                 })
         return fills
+
+    def get_buyable(self, code: str, price: int = 0) -> dict:
+        """매수가능금액 조회. price=0이면 시장가 기준(증거금율 반영)으로 조회한다.
+
+        반환: {code, ord_psbl_cash, nrcvb_buy_amt, nrcvb_buy_qty,
+               max_buy_amt, max_buy_qty}.
+        ※ 미수 미사용 기준은 nrcvb_*(미수없는…), 신용 포함 최대는 max_*.
+        """
+        cano, prod = self._account
+        market = price <= 0
+        df = self._call(
+            f"get_buyable({code})",
+            kb.inquire_psbl_order,
+            env_dv=self._env,
+            cano=cano,
+            acnt_prdt_cd=prod,
+            pdno=code,
+            ord_unpr="0" if market else str(int(price)),
+            ord_dvsn="01" if market else "00",  # 01:시장가(증거금율 반영), 00:지정가
+            cma_evlu_amt_icld_yn="N",
+            ovrs_icld_yn="N",
+        )
+        row = _first_row(df)
+        return {
+            "code": code,
+            "ord_psbl_cash": _to_int(row.get("ord_psbl_cash")),  # 주문가능현금
+            "nrcvb_buy_amt": _to_int(row.get("nrcvb_buy_amt")),  # 미수없는 매수금액
+            "nrcvb_buy_qty": _to_int(row.get("nrcvb_buy_qty")),  # 미수없는 매수수량
+            "max_buy_amt": _to_int(row.get("max_buy_amt")),      # 최대 매수금액(신용 포함)
+            "max_buy_qty": _to_int(row.get("max_buy_qty")),      # 최대 매수수량
+        }
 
     def is_trading_day(self, date: str = "") -> bool:
         """해당일 개장(주문가능)일 여부. KIS 휴장일조회(chk_holiday)의 opnd_yn 사용.
