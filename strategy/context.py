@@ -1,37 +1,31 @@
 """LLM에 넘길 전략 명세 + 시세/포지션/현금 스냅샷 구성.
 
-전략 명세(STRATEGY_SPEC)는 사람이 직접 다듬는 상세 룰이다. LLM은 이 룰과
+전략 명세는 strategy/presets.py 의 활성 프리셋이 제공한다. LLM은 그 명세와
 스냅샷을 보고 BUY/SELL/HOLD 중 하나를 고른다(자유 매매 아님). 안전장치는
-코드(risk/guardrails.py)가 별도로 강제하므로 여기엔 룰의 '의도'만 적는다.
+코드(risk/guardrails.py)가 별도로 강제하므로 여기엔 룰의 '의도'만 담는다.
+
+활성 전략은 config.settings.strategy_name 으로 고르고, 각 전략이 스냅샷에
+넣을 지표(signals 함수)와 SPEC 텍스트를 함께 가진다. 전략 교체는 .env의
+STRATEGY_NAME 한 줄로 끝난다.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-# ── 상세 전략 명세 (직접 편집) ──────────────────────────────────────────────
-# 진입/청산/분할매수 규칙을 구체적으로 기술. LLM은 이 안에서만 판단한다.
-STRATEGY_SPEC = """\
-[운용 목표]
-- 소액(약 50만원) 단기 스윙. 큰 손실 회피가 수익보다 우선.
+import pandas as pd
 
-[진입(BUY) 조건]
-- 전일 종가 대비 현재가가 -2% 이상 하락한 눌림목에서 분할 매수 고려.
-- 한 번에 전량 매수하지 말고 1주 단위로 분할 진입.
-- 이미 해당 종목 비중이 큰 경우 추가 진입을 자제.
+from config import settings
+from strategy.presets import get_preset
 
-[청산(SELL) 조건]
-- 매수 평균가 대비 +3% 이상이면 일부 익절 고려.
-- 추세가 꺾였다고 판단되면(고점 대비 빠른 하락 등) 보유분 축소.
+# 활성 전략 프리셋(기동 시 1회 결정). config가 미등록 키를 이미 막아준다.
+_ACTIVE = get_preset(settings.strategy_name)
 
-[관망(HOLD) 조건]
-- 방향성이 불분명하거나 변동성이 과도하면 HOLD.
-- 확신이 없으면 항상 HOLD를 선택(불필요한 매매 금지).
+# 하위 호환: 기존 코드가 import 하던 모듈 상수 = 활성 전략의 SPEC.
+STRATEGY_SPEC = _ACTIVE.spec
 
-[주의]
-- 손절/한도/거래횟수 등 안전장치는 코드가 강제하므로 여기서 신경 쓰지 않는다.
-- 너는 BUY/SELL/HOLD 중 하나와 수량만 제안한다. 실행 여부는 코드가 최종 결정한다.
-"""
+# 일봉은 활성 전략이 요구하는 최소치보다 여유 있게 받는다(주말/휴일·결측 대비).
+_OHLCV_COUNT = min(100, max(30, _ACTIVE.min_days + 10))
 
 
 def build_snapshot(broker, watch_codes: list[str]) -> dict:
@@ -40,7 +34,17 @@ def build_snapshot(broker, watch_codes: list[str]) -> dict:
     market: dict[str, dict] = {}
     for code in watch_codes:
         try:
-            market[code] = broker.get_price(code)
+            info = broker.get_price(code)
+            try:
+                if _ACTIVE.min_days > 0:
+                    candles = broker.get_daily_ohlcv(code, count=_OHLCV_COUNT)
+                    df = pd.DataFrame(candles)  # 과거→현재 정렬, OHLCV 컬럼
+                else:
+                    df = pd.DataFrame()  # 52주 신고가처럼 일봉이 필요 없는 전략
+                info.update(_ACTIVE.signals(df, info))
+            except Exception:  # noqa: BLE001 — 지표 실패가 현재가까지 막지 않게
+                info["error"] = "지표 계산 실패"
+            market[code] = info
         except Exception:  # noqa: BLE001 — 일부 종목 실패가 전체를 막지 않게
             market[code] = {"code": code, "price": 0, "error": "조회 실패"}
 
