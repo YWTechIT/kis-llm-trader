@@ -173,6 +173,54 @@ class Broker:
             "prdy_ctrt": _to_float(row.get("prdy_ctrt")),
         }
 
+    def get_daily_ohlcv(self, code: str, count: int = 30) -> list[dict]:
+        """최근 일봉 OHLCV 조회(과거→현재 정렬). 이동평균 등 지표 계산용 원천 데이터.
+
+        count는 최근 영업일 수(KIS 한 번 호출 상한 100). 조회 시작일은 달력 기준으로
+        넉넉히(주말/공휴일 감안) 잡고, 받은 일봉 중 마지막 count개만 돌려준다.
+        반환: [{date, open, high, low, close, volume}, ...] (오래된 날짜가 앞).
+        """
+        from datetime import datetime, timedelta
+
+        count = max(1, min(count, 100))
+        end = datetime.now()
+        # 영업일 ~count개를 확보하려면 달력일은 더 길게 잡아야 한다(주말·휴일 보정 ×2 + 여유).
+        start = end - timedelta(days=count * 2 + 10)
+        _, df = self._call(
+            f"get_daily_ohlcv({code})",
+            kb.inquire_daily_itemchartprice,
+            env_dv=self._env,
+            fid_cond_mrkt_div_code="J",
+            fid_input_iscd=code,
+            fid_input_date_1=start.strftime("%Y%m%d"),
+            fid_input_date_2=end.strftime("%Y%m%d"),
+            fid_period_div_code="D",
+            fid_org_adj_prc="0",  # 수정주가(액면분할 등 보정) — 이평선 연속성 확보
+        )
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            raise BrokerError(f"get_daily_ohlcv({code}): 빈 응답")
+
+        candles: list[dict] = []
+        for _, r in df.iterrows():
+            row = r.to_dict()
+            close = _to_int(row.get("stck_clpr"))
+            if close <= 0:  # 휴장/결측 행 방어
+                continue
+            candles.append({
+                "date": str(row.get("stck_bsop_date", "")).strip(),
+                "open": _to_int(row.get("stck_oprc")),
+                "high": _to_int(row.get("stck_hgpr")),
+                "low": _to_int(row.get("stck_lwpr")),
+                "close": close,
+                "volume": _to_int(row.get("acml_vol")),
+            })
+        if not candles:
+            raise BrokerError(f"get_daily_ohlcv({code}): 유효 일봉 없음")
+
+        # KIS는 최신→과거 순으로 주므로 과거→현재로 뒤집고 최근 count개만 남긴다.
+        candles.sort(key=lambda c: c["date"])
+        return candles[-count:]
+
     def get_balance(self) -> dict:
         """잔고 조회. 반환: {cash, total_eval, positions: {code: {...}}}."""
         cano, prod = self._account
