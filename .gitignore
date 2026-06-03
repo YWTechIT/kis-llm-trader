@@ -1,0 +1,36 @@
+# 크리덴셜 — 절대 커밋 금지
+.env
+.env.*
+!.env.example
+
+# KIS 인증 설정/토큰 캐시 (config.py가 .env로부터 런타임 생성)
+kis_devlp.yaml
+secrets/
+*.token
+# KIS access token 디스크 캐시 (kis_auth.py가 생성)
+KIS*.json
+access.tok
+token.dat
+
+# SQLite 저널
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# 운영 로그 (계좌/체결/종목 등 민감정보가 쌓일 수 있어 커밋 금지)
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# OS
+.DS_Store
+
+# reference
+reference/
