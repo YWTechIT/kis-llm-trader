@@ -18,6 +18,7 @@ import config
 from adapter.broker import Broker, BrokerError
 from adapter.market_stream import MarketStream
 from notify.discord import DiscordNotifier
+from notify.discord_bot import TraderBot
 from risk import guardrails
 from risk.guardrails import AccountState, GuardrailConfig
 from store.journal import Journal
@@ -67,6 +68,15 @@ class Trader:
         )
         # broker/stream 경고는 디스코드로 보냄(알림 실패는 흐름을 막지 않음)
         self.broker = Broker(notifier=self.discord.error)
+        # 양방향 조회 봇(선택). broker를 공유하되 RLock으로 매매 루프와 직렬화된다.
+        self.bot: TraderBot | None = None
+        if self.settings.discord_bot_enabled:
+            self.bot = TraderBot(
+                self.settings.discord_bot_token,
+                self.broker,
+                allowed_channel_id=self.settings.discord_bot_channel_id,
+                is_paper=self.settings.is_paper,
+            )
         self.stream = MarketStream(self.settings.watch_codes, notifier=self.discord.error)
         self.decider = LLMDecider(self.settings.anthropic_api_key, self.settings.anthropic_model)
         self.journal = Journal(self.settings.journal_db)
@@ -80,11 +90,23 @@ class Trader:
     def startup(self) -> None:
         self.broker.authenticate()
         self.stream.start()
+        # 조회 봇 기동 — 실패해도 매매는 계속(봇은 부가 기능)
+        if self.bot is not None:
+            try:
+                self.bot.run_in_thread()
+                logger.info("Discord 조회 봇 스레드 기동")
+            except Exception:  # noqa: BLE001 — 봇 기동 실패가 매매를 막지 않게
+                logger.exception("Discord 봇 기동 실패 — 매매는 계속 진행")
         self.discord.info("🤖 트레이더 기동", f"환경={self.settings.kis_env}, 관심종목={self.settings.watch_codes}")
         logger.info("기동 완료")
 
     def shutdown(self, reason: str = "") -> None:
         self._running = False
+        if self.bot is not None:
+            try:
+                self.bot.stop()
+            except Exception:  # noqa: BLE001 — 봇 종료 실패가 셧다운을 막지 않게
+                logger.exception("Discord 봇 종료 실패")
         try:
             self.stream.stop()
         finally:
