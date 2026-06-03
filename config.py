@@ -78,6 +78,10 @@ class Settings:
     # 알림
     discord_webhook_url: str
     discord_tradelog_url: str   # 매 사이클 LLM 결정 전부를 보낼 별도 채널(비면 일반 채널로 폴백)
+    # 양방향 조회 봇(잔고/보유/체결/매수가능 질의 응답). 비활성 시 토큰 불필요.
+    discord_bot_enabled: bool
+    discord_bot_token: str      # 크리덴셜 — 절대 로깅/노출 금지
+    discord_bot_channel_id: int  # 조회 허용 채널 ID(0이면 전체 허용)
     # 로깅
     log_level: str              # 파일 로그 레벨(DEBUG/INFO/...). 콘솔은 INFO 고정.
     log_file: str               # 상세 로그 파일 경로(로테이션). 비면 파일 로그 비활성.
@@ -119,6 +123,12 @@ def load_settings() -> Settings:
     acct8 = _require("KIS_ACCOUNT_8")
     acct_pd = os.environ.get("KIS_ACCOUNT_PD", "01").strip() or "01"
 
+    # 양방향 조회 봇: 활성화 시에만 토큰을 필수로 요구한다(기존 배포가 봇 끄면 안 깨지도록).
+    bot_enabled = os.environ.get("DISCORD_BOT_ENABLED", "false").strip().lower() == "true"
+    bot_token = _require("DISCORD_BOT_TOKEN") if bot_enabled else os.environ.get(
+        "DISCORD_BOT_TOKEN", ""
+    ).strip()
+
     watch_raw = os.environ.get("WATCH_CODES", "005930")
     watch_codes = [c.strip() for c in watch_raw.split(",") if c.strip()]
     if not watch_codes:
@@ -152,6 +162,9 @@ def load_settings() -> Settings:
         anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5").strip(),
         discord_webhook_url=_require("DISCORD_WEBHOOK_URL"),
         discord_tradelog_url=os.environ.get("DISCORD_TRADELOG_URL", "").strip(),
+        discord_bot_enabled=bot_enabled,
+        discord_bot_token=bot_token,
+        discord_bot_channel_id=_get_int("DISCORD_BOT_CHANNEL_ID", 0),
         log_level=os.environ.get("LOG_LEVEL", "DEBUG").strip().upper() or "DEBUG",
         log_file=os.environ.get("LOG_FILE", "logs/trader.log").strip(),
         watch_codes=watch_codes,
