@@ -1,0 +1,3 @@
+[submodule "reference/open-trading-api"]
+	path = reference/open-trading-api
+	url = https://github.com/koreainvestment/open-trading-api
