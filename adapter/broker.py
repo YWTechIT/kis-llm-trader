@@ -153,7 +153,11 @@ class Broker:
 
     # ── 공개 API ──
     def get_price(self, code: str) -> dict:
-        """현재가 조회. 반환: {code, price, open, high, low, prdy_ctrt(전일대비율)}."""
+        """현재가 조회. 반환: {code, name, price, open, high, low, prdy_ctrt(전일대비율)}.
+
+        name(HTS 한글 종목명)은 보유하지 않은 종목도 알림에 종목명을 함께
+        표기하기 위해 포함한다(예: 피에스케이홀딩스(031980)).
+        """
         df = self._call(
             f"get_price({code})",
             kb.inquire_price,
@@ -166,6 +170,7 @@ class Broker:
             raise BrokerError(f"get_price({code}): 빈 응답")
         return {
             "code": code,
+            "name": str(row.get("hts_kor_isnm", "")).strip(),
             "price": _to_int(row.get("stck_prpr")),
             "open": _to_int(row.get("stck_oprc")),
             "high": _to_int(row.get("stck_hgpr")),
