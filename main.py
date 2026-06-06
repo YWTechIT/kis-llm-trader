@@ -165,7 +165,10 @@ class Trader:
                 approved=result.approved, guard_reason=result.reason,
             )
 
-            name = str(snapshot["positions"].get(code, {}).get("name", ""))
+            # 보유종목이면 포지션의 종목명을, 아니면 시세 스냅샷의 종목명을 쓴다.
+            # (미보유 매수 후보도 종목명을 알림에 표기하기 위함)
+            name = (str(snapshot["positions"].get(code, {}).get("name", ""))
+                    or str(snapshot["market"].get(code, {}).get("name", "")))
             # trade-log 채널: 매 사이클 결정 전부(HOLD/축소/차단 포함) 기록
             self.discord.decision(
                 code=code, name=name,
