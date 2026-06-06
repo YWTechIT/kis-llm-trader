@@ -151,6 +151,13 @@ class TraderBot:
         embed.add_field(name="주문가능", value=f"{balance.get('available_cash', 0):,}원", inline=True)
         embed.add_field(name="평가손익 합계", value=f"{pnl_sum:,}원", inline=True)
         embed.add_field(name="보유종목 수", value=f"{len(positions)}개", inline=True)
+        # 집계 아래에 보유종목 상세를 이어 붙인다(!보유와 동일 포맷).
+        # 디스코드 임베드엔 <hr>이 없어, 구분선 역할의 필드를 끼워 시각 분리한다.
+        if positions:
+            embed.add_field(name="​", value="━━━━━ 📦 보유종목 ━━━━━", inline=False)
+        truncated = self._add_holding_fields(embed, positions)
+        if truncated:
+            embed.set_footer(text=f"{self._env_tag} · 외 {truncated}종목 생략")
         return embed
 
     def _holdings_embed(self, balance: dict) -> discord.Embed:
@@ -159,8 +166,22 @@ class TraderBot:
         if not positions:
             embed.description = "보유 종목이 없습니다."
             return embed
-        # 임베드 필드는 최대 25개 — 종목당 1필드, 초과분은 잘림 안내.
-        for pos in list(positions.values())[:24]:
+        truncated = self._add_holding_fields(embed, positions)
+        if truncated:
+            embed.set_footer(text=f"{self._env_tag} · 외 {truncated}종목 생략")
+        return embed
+
+    @staticmethod
+    def _add_holding_fields(embed: discord.Embed, positions: dict) -> int:
+        """보유종목별 상세 필드를 embed에 추가하고, 잘린 종목 수를 반환한다.
+
+        임베드 필드는 최대 25개 — 잔고 집계(5) + 구분선(1)과 합산해도 넘지
+        않도록 종목은 19개로 제한하고 초과분 수를 돌려준다(호출자가 footer로 안내).
+        """
+        if not positions:
+            return 0
+        limit = 19
+        for pos in list(positions.values())[:limit]:
             name = pos.get("name") or pos.get("code", "")
             code = pos.get("code", "")
             value = (
@@ -169,9 +190,7 @@ class TraderBot:
                 f"손익 {pos.get('pnl_amt', 0):,}원 ({pos.get('pnl_rate', 0.0):+.2f}%)"
             )
             embed.add_field(name=f"{name} ({code})", value=value, inline=False)
-        if len(positions) > 24:
-            embed.set_footer(text=f"{self._env_tag} · 외 {len(positions) - 24}종목 생략")
-        return embed
+        return max(0, len(positions) - limit)
 
     def _fills_embed(self, fills: list[dict]) -> discord.Embed:
         embed = self._base("🧾 당일 거래내역", _COLOR_INFO)
