@@ -89,6 +89,9 @@ class Settings:
     watch_codes: list[str]
     strategy_name: str          # 활성 전략 프리셋 키(strategy/presets.py). 기본 golden_cross.
     decision_interval_min: int
+    # 순위 조회(거래량/등락률) 디스코드 표시 기본값
+    rank_top_n: int             # 순위 리스트 표시 개수(기본 10)
+    rank_exclude_etf: bool      # ETF/ETN 기본 제외 여부(봇 명령으로 토글 가능)
     journal_db: str
     # 가드레일 파라미터
     max_order_krw: int
@@ -182,6 +185,8 @@ def load_settings() -> Settings:
         watch_codes=watch_codes,
         strategy_name=strategy_name,
         decision_interval_min=_get_int("DECISION_INTERVAL_MIN", 15),
+        rank_top_n=_get_int("RANK_TOP_N", 10),
+        rank_exclude_etf=os.environ.get("RANK_EXCLUDE_ETF", "true").strip().lower() == "true",
         journal_db=os.environ.get("JOURNAL_DB", "trader.db").strip() or "trader.db",
         max_order_krw=_get_int("MAX_ORDER_KRW", 100_000),
         max_position_pct=_get_float("MAX_POSITION_PCT", 0.4),
