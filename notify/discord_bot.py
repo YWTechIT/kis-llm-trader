@@ -38,8 +38,14 @@ _HELP_TEXT = (
     "`!보유` / `보유종목` — 보유종목별 매수가·현재가·손익·수익률\n"
     "`!체결` / `거래내역` — 당일 체결 내역\n"
     "`!매수가능 005930 [가격]` — 종목 매수가능 금액/수량\n"
+    "`!순위` — 거래량 순위 TOP 10 (ETF 제외)\n"
+    "`!순위 etf` — 거래량 순위 TOP 10 (ETF 포함)\n"
+    "`!등락` — 등락률 순위 TOP 10\n"
     "`!도움` / `!help` — 이 도움말"
 )
+
+# `!순위 etf` / `!순위 전체` 등 ETF 포함 토글로 인식할 인자
+_INCLUDE_ETF_ARGS = ("etf", "전체", "all")
 
 
 class TraderBot:
@@ -123,6 +129,19 @@ class TraderBot:
                     return self._error_embed("입력 오류", "가격은 숫자여야 합니다.")
             data = await asyncio.to_thread(self._broker.get_orderable_cash, code, price)
             return self._orderable_embed(data)
+        if cmd in ("순위", "거래량", "volume"):
+            include_etf = len(parts) > 1 and parts[1].lstrip("!").lower() in _INCLUDE_ETF_ARGS
+            rows = await asyncio.to_thread(
+                self._broker.get_volume_rank, top=10, exclude_etf=not include_etf
+            )
+            tag = " (ETF 포함)" if include_etf else " (ETF 제외)"
+            return self._ranking_embed(f"📊 거래량 순위 TOP 10{tag}", rows, include_etf)
+        if cmd in ("등락", "등락률", "fluctuation"):
+            include_etf = len(parts) > 1 and parts[1].lstrip("!").lower() in _INCLUDE_ETF_ARGS
+            rows = await asyncio.to_thread(
+                self._broker.get_fluctuation, top=10, exclude_etf=not include_etf
+            )
+            return self._ranking_embed("🚀 등락률 순위 TOP 10", rows, include_etf)
         if cmd in ("도움", "help", "명령어"):
             return self._info_embed("🤖 트레이더 조회봇", _HELP_TEXT)
         return None
@@ -140,6 +159,23 @@ class TraderBot:
 
     def _error_embed(self, title: str, desc: str) -> discord.Embed:
         return self._info_embed(f"⚠️ {title}", desc[:1500])
+
+    def _ranking_embed(self, title: str, rows: list[dict],
+                       include_etf: bool = False) -> discord.Embed:
+        """거래량/등락률 순위 리스트 임베드. 빈 응답이면 안내 문구."""
+        embed = self._base(title, _COLOR_INFO)
+        if not rows:
+            embed.description = "순위 데이터가 없습니다(장중에만 제공)."
+            return embed
+        embed.description = "\n".join(
+            f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
+            f"{r['price']:,}원  {r['change_pct']:+.2f}%"
+            for r in rows
+        )
+        # ETF 포함/제외를 토글할 수 있음을 항상 안내(현재 상태의 반대 명령을 제시)
+        hint = "ETF 제외: `!순위`" if include_etf else "ETF 포함: `!순위 etf`"
+        embed.set_footer(text=f"{self._env_tag} · {hint}")
+        return embed
 
     def _balance_embed(self, balance: dict) -> discord.Embed:
         # 계좌 단위 원가(분모)가 없어 계좌 수익률 대신 평가손익 합계를 표시한다.

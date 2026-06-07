@@ -60,6 +60,26 @@ def _first_row(df: Optional[pd.DataFrame]) -> dict:
     return df.iloc[0].to_dict()
 
 
+# 순위 응답에서 종목코드 컬럼명이 API마다 다르다(volume_rank / fluctuation)
+_RANK_CODE_KEYS = ("mksc_shrn_iscd", "stck_shrn_iscd")
+# API 마스크로 못 거르는 ETF/ETN/스팩/선물 등을 종목명으로 방어적으로 한 번 더 거른다.
+_ETF_NAME_HINTS = ("KODEX", "TIGER", "ETF", "ETN", "레버리지", "인버스",
+                   "ACE", "KBSTAR", "PLUS", "SOL", "선물", "스팩")
+
+
+def _rank_code(row: dict) -> str:
+    for k in _RANK_CODE_KEYS:
+        v = str(row.get(k, "")).strip()
+        if v:
+            return v
+    return ""
+
+
+def _looks_like_etf(name: str) -> bool:
+    up = name.upper()
+    return any(h.upper() in up for h in _ETF_NAME_HINTS)
+
+
 class Broker:
     def __init__(
         self,
@@ -412,6 +432,84 @@ class Broker:
             "max_buy_qty": _to_int(row.get("max_buy_qty")),      # 최대 매수수량
         }
 
+    # ── 순위 조회(거래량/등락률) — 읽기 전용, env_dv 미사용(F* TR은 모의/실전 자동분기) ──
+    def get_volume_rank(self, *, market: str = "J", top: int = 10,
+                        exclude_etf: bool = True) -> list[dict]:
+        """거래량 순위 TOP N.
+
+        반환: [{rank, code, name, price, change_pct, volume, trade_amt}]. 빈응답이면 [].
+        exclude_etf=True면 ETF/ETN을 API 마스크 + 종목명으로 이중 제외한다.
+        """
+        exls = "0000001100" if exclude_etf else "0000000000"  # idx6=ETF, idx7=ETN
+        df = self._call(
+            "get_volume_rank",
+            kb.volume_rank,
+            fid_cond_mrkt_div_code=market,
+            fid_cond_scr_div_code="20171",
+            fid_input_iscd="0000",
+            fid_div_cls_code="0",
+            fid_blng_cls_code="0",
+            fid_trgt_cls_code="111111111",
+            fid_trgt_exls_cls_code=exls,
+            fid_input_price_1="",
+            fid_input_price_2="",
+            fid_vol_cnt="",
+            fid_input_date_1="",
+        )
+        return self._parse_rank_df(df, top, exclude_etf, amt_key="acml_tr_pbmn")
+
+    def get_fluctuation(self, *, market: str = "J", top: int = 10,
+                        sort: str = "0", exclude_etf: bool = True) -> list[dict]:
+        """등락률 순위 TOP N. sort '0'=상승률순.
+
+        반환: [{rank, code, name, price, change_pct, volume, trade_amt}]. 빈응답이면 [].
+        """
+        exls = "0000001100" if exclude_etf else "0000000000"
+        df = self._call(
+            "get_fluctuation",
+            kb.fluctuation,
+            fid_cond_mrkt_div_code=market,
+            fid_cond_scr_div_code="20170",
+            fid_input_iscd="0000",
+            fid_rank_sort_cls_code=sort,
+            fid_input_cnt_1="0",
+            fid_prc_cls_code="0",
+            fid_input_price_1="",
+            fid_input_price_2="",
+            fid_vol_cnt="",
+            fid_trgt_cls_code="0",
+            fid_trgt_exls_cls_code=exls,
+            fid_div_cls_code="0",
+            fid_rsfl_rate1="",
+            fid_rsfl_rate2="",
+        )
+        return self._parse_rank_df(df, top, exclude_etf, amt_key=None)
+
+    def _parse_rank_df(self, df: Any, top: int, exclude_etf: bool,
+                       *, amt_key: Optional[str]) -> list[dict]:
+        """순위 DataFrame을 정규화 리스트로. ETF 필터 후 rank를 1..N으로 재번호한다."""
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return []
+        out: list[dict] = []
+        for _, r in df.iterrows():
+            row = r.to_dict()
+            code = _rank_code(row)
+            name = str(row.get("hts_kor_isnm", "")).strip()
+            if not code or (exclude_etf and _looks_like_etf(name)):
+                continue
+            out.append({
+                "rank": len(out) + 1,
+                "code": code,
+                "name": name,
+                "price": _to_int(row.get("stck_prpr")),
+                "change_pct": _to_float(row.get("prdy_ctrt")),
+                "volume": _to_int(row.get("acml_vol")),
+                "trade_amt": _to_int(row.get(amt_key)) if amt_key else 0,
+            })
+            if len(out) >= top:
+                break
+        return out
+
     def is_trading_day(self, date: str = "") -> bool:
         """해당일 개장(주문가능)일 여부. KIS 휴장일조회(chk_holiday)의 opnd_yn 사용.
 
@@ -445,6 +543,14 @@ def _smoke(code: str) -> None:
     bal = b.get_balance()
     print("CASH:", bal["cash"], "TOTAL_EVAL:", bal["total_eval"],
           "POSITIONS:", list(bal["positions"].keys()))
+    print("VOLUME_RANK(ETF제외):")
+    for r in b.get_volume_rank(top=5):
+        print(f"  {r['rank']:>2} {r['code']} {r['name']} "
+              f"{r['price']:,}원 {r['change_pct']:+.2f}%")
+    print("FLUCTUATION:")
+    for r in b.get_fluctuation(top=5):
+        print(f"  {r['rank']:>2} {r['code']} {r['name']} "
+              f"{r['price']:,}원 {r['change_pct']:+.2f}%")
 
 
 if __name__ == "__main__":
