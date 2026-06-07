@@ -38,9 +38,9 @@ _HELP_TEXT = (
     "`!보유` / `보유종목` — 보유종목별 매수가·현재가·손익·수익률\n"
     "`!체결` / `거래내역` — 당일 체결 내역\n"
     "`!매수가능 005930 [가격]` — 종목 매수가능 금액/수량\n"
-    "`!순위` — 거래량 순위 TOP 10 (ETF 제외)\n"
-    "`!순위 etf` — 거래량 순위 TOP 10 (ETF 포함)\n"
-    "`!등락` — 등락률 순위 TOP 10\n"
+    "`!순위` — 거래량+등락률 순위 TOP 10 (ETF 제외)\n"
+    "`!순위 etf` — 거래량+등락률 순위 TOP 10 (ETF 포함)\n"
+    "`!거래량` — 거래량 순위만 / `!등락` — 등락률 순위만\n"
     "`!도움` / `!help` — 이 도움말"
 )
 
@@ -129,7 +129,17 @@ class TraderBot:
                     return self._error_embed("입력 오류", "가격은 숫자여야 합니다.")
             data = await asyncio.to_thread(self._broker.get_orderable_cash, code, price)
             return self._orderable_embed(data)
-        if cmd in ("순위", "거래량", "volume"):
+        if cmd in ("순위", "rank"):
+            # 거래량 + 등락률 순위를 한 임베드에 함께 보여준다.
+            include_etf = len(parts) > 1 and parts[1].lstrip("!").lower() in _INCLUDE_ETF_ARGS
+            vol_rows, flt_rows = await asyncio.gather(
+                asyncio.to_thread(self._broker.get_volume_rank, top=10,
+                                  exclude_etf=not include_etf),
+                asyncio.to_thread(self._broker.get_fluctuation, top=10,
+                                  exclude_etf=not include_etf),
+            )
+            return self._combined_rank_embed(vol_rows, flt_rows, include_etf)
+        if cmd in ("거래량", "volume"):
             include_etf = len(parts) > 1 and parts[1].lstrip("!").lower() in _INCLUDE_ETF_ARGS
             rows = await asyncio.to_thread(
                 self._broker.get_volume_rank, top=10, exclude_etf=not include_etf
@@ -173,6 +183,32 @@ class TraderBot:
             for r in rows
         )
         # ETF 포함/제외를 토글할 수 있음을 항상 안내(현재 상태의 반대 명령을 제시)
+        hint = "ETF 제외: `!순위`" if include_etf else "ETF 포함: `!순위 etf`"
+        embed.set_footer(text=f"{self._env_tag} · {hint}")
+        return embed
+
+    @staticmethod
+    def _rank_lines(rows: list[dict]) -> str:
+        """순위 리스트를 임베드 필드 본문 문자열로. 빈 응답이면 안내 문구.
+
+        임베드 필드는 1024자 제한 → TOP 10이면 충분히 안 넘지만 안전하게 자른다.
+        """
+        if not rows:
+            return "데이터 없음(장중에만 제공)"
+        text = "\n".join(
+            f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
+            f"{r['price']:,}원  {r['change_pct']:+.2f}%"
+            for r in rows
+        )
+        return text[:1024]
+
+    def _combined_rank_embed(self, vol_rows: list[dict], flt_rows: list[dict],
+                             include_etf: bool = False) -> discord.Embed:
+        """거래량 + 등락률 순위를 한 임베드에 두 필드로 함께 표시."""
+        etf_tag = "ETF 포함" if include_etf else "ETF 제외"
+        embed = self._base(f"📈 순위 TOP 10 ({etf_tag})", _COLOR_INFO)
+        embed.add_field(name="📊 거래량 순위", value=self._rank_lines(vol_rows), inline=False)
+        embed.add_field(name="🚀 등락률 순위", value=self._rank_lines(flt_rows), inline=False)
         hint = "ETF 제외: `!순위`" if include_etf else "ETF 포함: `!순위 etf`"
         embed.set_footer(text=f"{self._env_tag} · {hint}")
         return embed
