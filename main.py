@@ -76,6 +76,7 @@ class Trader:
                 self.broker,
                 allowed_channel_id=self.settings.discord_bot_channel_id,
                 is_paper=self.settings.is_paper,
+                rank_channel_id=self.settings.discord_rank_channel_id,
             )
         self.stream = MarketStream(self.settings.watch_codes, notifier=self.discord.error)
         self.decider = LLMDecider(self.settings.anthropic_api_key, self.settings.anthropic_model)
