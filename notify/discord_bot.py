@@ -47,18 +47,26 @@ _HELP_TEXT = (
 # `!순위 etf` / `!순위 전체` 등 ETF 포함 토글로 인식할 인자
 _INCLUDE_ETF_ARGS = ("etf", "전체", "all")
 
+# 결과를 #daily-market 채널로 보낼 순위/등락 계열 명령
+_RANK_COMMANDS = (
+    "순위", "rank", "거래량", "volume", "등락", "등락률", "fluctuation",
+)
+
 
 class TraderBot:
     def __init__(self, token: str, broker, *, allowed_channel_id: int = 0,
-                 is_paper: bool = False) -> None:
+                 is_paper: bool = False, rank_channel_id: int = 0) -> None:
         """token: 봇 토큰(크리덴셜). broker: 인증된 Broker 인스턴스(매매 루프와 공유).
         allowed_channel_id: 조회 허용 채널 ID(0이면 전체 허용).
         is_paper: 모의/실제 라벨 표기용.
+        rank_channel_id: 순위/등락 결과를 보낼 채널 ID(#daily-market).
+            0이면 명령을 친 채널에 그대로 응답(기존 동작).
         """
         self._token = token
         self._broker = broker
         self._allowed_channel_id = allowed_channel_id
         self._is_paper = is_paper
+        self._rank_channel_id = rank_channel_id
         self._thread: threading.Thread | None = None
 
         intents = discord.Intents.default()
@@ -98,10 +106,29 @@ class TraderBot:
                 embed = self._error_embed("조회 실패", f"{type(exc).__name__}: {exc}")
             if embed is None:
                 return  # 인식 못한 입력은 무응답(잡음 방지)
+            # 순위/등락 결과는 지정 채널(#daily-market)로, 그 외는 명령 친 채널로.
+            target = self._resolve_target(content, message.channel)
             try:
-                await message.channel.send(embed=embed)
+                await target.send(embed=embed)
             except Exception:  # noqa: BLE001 — 전송 실패도 흐름을 막지 않는다
                 logger.exception("디스코드 응답 전송 실패")
+
+    def _resolve_target(self, content: str, default_channel):
+        """순위/등락 계열이면 rank 채널로, 아니면 기본(명령 친) 채널로 라우팅.
+
+        rank 채널 ID가 없거나 봇이 그 채널을 못 찾으면 기본 채널로 폴백한다.
+        """
+        if not self._rank_channel_id:
+            return default_channel
+        cmd = content.split()[0].lstrip("!").lower() if content.split() else ""
+        if cmd not in _RANK_COMMANDS:
+            return default_channel
+        target = self._client.get_channel(self._rank_channel_id)
+        if target is None:
+            logger.warning("순위 채널(id=%s)을 찾을 수 없어 기본 채널로 전송",
+                           self._rank_channel_id)
+            return default_channel
+        return target
 
     # ── 명령 라우팅 ──
     async def _handle(self, content: str) -> discord.Embed | None:

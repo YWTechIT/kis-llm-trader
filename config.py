@@ -82,6 +82,7 @@ class Settings:
     discord_bot_enabled: bool
     discord_bot_token: str      # 크리덴셜 — 절대 로깅/노출 금지
     discord_bot_channel_id: int  # 조회 허용 채널 ID(0이면 전체 허용)
+    discord_rank_channel_id: int  # 순위/등락 결과 전송 채널 ID(#daily-market, 0이면 명령 채널)
     # 로깅
     log_level: str              # 파일 로그 레벨(DEBUG/INFO/...). 콘솔은 INFO 고정.
     log_file: str               # 상세 로그 파일 경로(로테이션). 비면 파일 로그 비활성.
@@ -180,6 +181,7 @@ def load_settings() -> Settings:
         discord_bot_enabled=bot_enabled,
         discord_bot_token=bot_token,
         discord_bot_channel_id=_get_int("DISCORD_BOT_CHANNEL_ID", 0),
+        discord_rank_channel_id=_get_int("DISCORD_RANK_CHANNEL_ID", 0),
         log_level=os.environ.get("LOG_LEVEL", "DEBUG").strip().upper() or "DEBUG",
         log_file=os.environ.get("LOG_FILE", "logs/trader.log").strip(),
         watch_codes=watch_codes,
