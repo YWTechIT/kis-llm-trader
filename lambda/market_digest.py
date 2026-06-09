@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 로컬 실행 시 .env 로드 (Lambda에서는 환경변수가 이미 주입됨)
 try:
@@ -44,8 +45,8 @@ def _run() -> None:
     losers = movers["losers"]
     logger.info("상승 %d종목 / 하락 %d종목", len(gainers), len(losers))
 
-    # 2. 시세 + 뉴스 크롤링
-    for stock in gainers + losers:
+    # 2. 시세 + 뉴스 크롤링 (병렬)
+    def _fetch_stock_data(stock):
         sise = news_crawler.fetch_sise(stock.code)
         stock.prev_price = sise["prev"]
         stock.change_price = stock.price - sise["prev"] if sise["prev"] else 0
@@ -56,15 +57,26 @@ def _run() -> None:
         stock.trade_amount = sise["amount"]
         stock.articles = news_crawler.fetch_articles(stock.code, limit=3)
 
-    # 3. LLM 요약
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_stock_data, s): s for s in gainers + losers}
+        for f in as_completed(futures):
+            f.result()
+
+    # 3. LLM 요약 (병렬)
     summarizer = llm_summarizer.build_summarizer()
-    for stock in gainers + losers:
+
+    def _summarize(stock):
         stock.summary = summarizer.summarize(
             name=stock.name,
             code=stock.code,
             change_rate=stock.change_rate,
             articles=stock.articles,
         )
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_summarize, s): s for s in gainers + losers}
+        for f in as_completed(futures):
+            f.result()
 
     # 4. Discord 전송
     webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
