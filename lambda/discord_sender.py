@@ -54,7 +54,7 @@ def _mover_embed(stock: StockMover, is_gain: bool, rank: int = 0) -> dict:
         {"name": "💵 거래대금", "value": f"{stock.trade_amount:,}백만원" if stock.trade_amount else "-", "inline": True},
     ]
     if stock.summary:
-        fields.append({"name": "📰 뉴스 요약", "value": stock.summary[:1000], "inline": False})
+        fields.append({"name": "📰 AI 뉴스 요약", "value": stock.summary[:1000], "inline": False})
 
     news_links = ""
     for a in stock.articles[:3]:
