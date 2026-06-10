@@ -41,6 +41,9 @@ _HELP_TEXT = (
     "`!순위` — 거래량+등락률 순위 TOP 10 (ETF 제외)\n"
     "`!순위 etf` — 거래량+등락률 순위 TOP 10 (ETF 포함)\n"
     "`!거래량` — 거래량 순위만 / `!등락` — 등락률 순위만\n"
+    "`!관심추가 005930` — 관심종목 추가 (확인 후 confirm)\n"
+    "`!관심삭제 005930` — 관심종목 삭제 (확인 후 confirm)\n"
+    "`!관심목록` — 현재 관심종목 목록\n"
     "`!도움` / `!help` — 이 도움말"
 )
 
@@ -49,14 +52,17 @@ _INCLUDE_ETF_ARGS = ("etf", "전체", "all")
 
 
 class TraderBot:
-    def __init__(self, token: str, broker, *, allowed_channel_ids: list[int] | None = None,
+    def __init__(self, token: str, broker, *, trader=None,
+                 allowed_channel_ids: list[int] | None = None,
                  is_paper: bool = False) -> None:
         """token: 봇 토큰(크리덴셜). broker: 인증된 Broker 인스턴스(매매 루프와 공유).
+        trader: Trader 인스턴스(관심종목 런타임 변경용). None이면 관심종목 커맨드 비활성.
         allowed_channel_ids: 조회 허용 채널 ID 목록(비어 있으면 전체 허용).
         is_paper: 모의/실제 라벨 표기용.
         """
         self._token = token
         self._broker = broker
+        self._trader = trader
         self._allowed_channel_ids = allowed_channel_ids or []
         self._is_paper = is_paper
         self._thread: threading.Thread | None = None
@@ -152,9 +158,113 @@ class TraderBot:
                 self._broker.get_fluctuation, top=10, exclude_etf=not include_etf
             )
             return self._ranking_embed("🚀 등락률 순위 TOP 10", rows, include_etf)
+        if cmd in ("관심추가", "watchadd"):
+            return await self._handle_watch_add(parts)
+        if cmd in ("관심삭제", "watchdel", "watchremove"):
+            return await self._handle_watch_del(parts)
+        if cmd in ("관심목록", "watchlist"):
+            return await self._handle_watch_list()
         if cmd in ("도움", "help", "명령어"):
             return self._info_embed("🤖 트레이더 조회봇", _HELP_TEXT)
         return None
+
+    # ── 관심종목 핸들러 ──
+    async def _handle_watch_add(self, parts: list[str]) -> discord.Embed:
+        if self._trader is None:
+            return self._error_embed("기능 비활성", "관심종목 관리 기능이 비활성화 상태입니다.")
+        if len(parts) < 2:
+            return self._error_embed("입력 오류", "예: `!관심추가 005930`")
+
+        code = parts[1].strip()
+        confirm = len(parts) >= 3 and parts[2].strip().lower() == "confirm"
+
+        if confirm:
+            # 이미 base에 있는지 확인
+            if code in self.settings_watch_codes:
+                return self._info_embed("ℹ️ 이미 포함됨", f"`{code}` 는 환경설정 종목에 이미 포함되어 있습니다.")
+            if code in self._trader._extra_watch_codes:
+                return self._info_embed("ℹ️ 이미 추가됨", f"`{code}` 는 이미 관심종목에 추가되어 있습니다.")
+            self._trader._extra_watch_codes.append(code)
+            self._trader.journal.add_watch(code)
+            return self._info_embed("✅ 관심종목 추가됨", f"`{code}` 가 관심종목에 추가되었습니다.\n다음 재시작 후에도 유지됩니다.")
+
+        # 종목명 조회 후 confirm 안내
+        try:
+            info = await asyncio.to_thread(self._broker.get_price, code)
+            name = info.get("name") or code
+        except Exception:  # noqa: BLE001
+            name = code
+        return self._info_embed(
+            "⚠️ 관심종목 추가 확인",
+            f"**{name} ({code})** 을 관심종목에 추가하시겠습니까?\n"
+            f"확인: `!관심추가 {code} confirm`",
+        )
+
+    async def _handle_watch_del(self, parts: list[str]) -> discord.Embed:
+        if self._trader is None:
+            return self._error_embed("기능 비활성", "관심종목 관리 기능이 비활성화 상태입니다.")
+        if len(parts) < 2:
+            return self._error_embed("입력 오류", "예: `!관심삭제 005930`")
+
+        code = parts[1].strip()
+        confirm = len(parts) >= 3 and parts[2].strip().lower() == "confirm"
+
+        # 환경설정 종목은 삭제 불가
+        if code in self.settings_watch_codes:
+            return self._error_embed("삭제 불가", f"`{code}` 는 환경설정(.env)에 고정된 종목이라 삭제할 수 없습니다.")
+        if code not in self._trader._extra_watch_codes:
+            return self._error_embed("없는 종목", f"`{code}` 는 관심종목에 없습니다.")
+
+        if confirm:
+            self._trader._extra_watch_codes = [
+                c for c in self._trader._extra_watch_codes if c != code
+            ]
+            self._trader.journal.remove_watch(code)
+            return self._info_embed("✅ 관심종목 삭제됨", f"`{code}` 가 관심종목에서 삭제되었습니다.")
+
+        # 종목명 조회 후 confirm 안내
+        try:
+            info = await asyncio.to_thread(self._broker.get_price, code)
+            name = info.get("name") or code
+        except Exception:  # noqa: BLE001
+            name = code
+        return self._info_embed(
+            "⚠️ 관심종목 삭제 확인",
+            f"**{name} ({code})** 을 관심종목에서 삭제하시겠습니까?\n"
+            f"확인: `!관심삭제 {code} confirm`",
+        )
+
+    async def _handle_watch_list(self) -> discord.Embed:
+        if self._trader is None:
+            return self._error_embed("기능 비활성", "관심종목 관리 기능이 비활성화 상태입니다.")
+        embed = self._base("📋 관심종목 목록", _COLOR_INFO)
+        base_codes = self.settings_watch_codes
+        extra_codes = [c for c in self._trader._extra_watch_codes if c not in base_codes]
+        all_codes = [(c, "base") for c in base_codes] + [(c, "extra") for c in extra_codes]
+        if not all_codes:
+            embed.description = "관심종목이 없습니다."
+            return embed
+
+        async def _get_name(code: str) -> str:
+            try:
+                info = await asyncio.to_thread(self._broker.get_price, code)
+                return info.get("name") or code
+            except Exception:  # noqa: BLE001
+                return code
+
+        names = await asyncio.gather(*[_get_name(c) for c, _ in all_codes])
+        lines = []
+        for i, ((code, source), name) in enumerate(zip(all_codes, names), start=1):
+            tag = "환경설정" if source == "base" else "디스코드 추가"
+            lines.append(f"`{i}.` **{name}** ({code}) — {tag}")
+        embed.description = "\n".join(lines)
+        return embed
+
+    @property
+    def settings_watch_codes(self) -> list[str]:
+        if self._trader is None:
+            return []
+        return list(self._trader.settings.watch_codes)
 
     # ── 임베드 빌더 ──
     def _base(self, title: str, color: int) -> discord.Embed:
