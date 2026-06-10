@@ -143,10 +143,8 @@ def load_settings() -> Settings:
         "DISCORD_BOT_TOKEN", ""
     ).strip()
 
-    watch_raw = os.environ.get("WATCH_CODES", "005930")
+    watch_raw = os.environ.get("WATCH_CODES", "")
     watch_codes = [c.strip() for c in watch_raw.split(",") if c.strip()]
-    if not watch_codes:
-        raise ConfigError("WATCH_CODES 에 관심종목 코드가 최소 1개 필요합니다.")
 
     # 활성 전략 프리셋. 미등록 키면 침묵 실패 대신 기동을 거부한다.
     # (presets는 config를 import하지 않으므로 순환 의존 없음)

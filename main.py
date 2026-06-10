@@ -69,22 +69,29 @@ class Trader:
         # broker/stream 경고는 디스코드로 보냄(알림 실패는 흐름을 막지 않음)
         self.broker = Broker(notifier=self.discord.error)
         # 양방향 조회 봇(선택). broker를 공유하되 RLock으로 매매 루프와 직렬화된다.
+        self.journal = Journal(self.settings.journal_db)
+        self.guard_cfg = GuardrailConfig.from_settings(self.settings)
+        self._extra_watch_codes: list[str] = self.journal.get_watch_codes()
         self.bot: TraderBot | None = None
         if self.settings.discord_bot_enabled:
             self.bot = TraderBot(
                 self.settings.discord_bot_token,
                 self.broker,
+                trader=self,
                 allowed_channel_ids=self.settings.discord_bot_channel_ids,
                 is_paper=self.settings.is_paper,
             )
-        self.stream = MarketStream(self.settings.watch_codes, notifier=self.discord.error)
+        self.stream = MarketStream(self.watch_codes, notifier=self.discord.error)
         self.decider = LLMDecider(self.settings.anthropic_api_key, self.settings.anthropic_model)
-        self.journal = Journal(self.settings.journal_db)
-        self.guard_cfg = GuardrailConfig.from_settings(self.settings)
 
         self._running = True
         self._last_decision_ts = 0.0
         self._recent_order_keys: set[str] = set()
+
+    @property
+    def watch_codes(self) -> list[str]:
+        base = list(self.settings.watch_codes)
+        return base + [c for c in self._extra_watch_codes if c not in base]
 
     # ── 수명주기 ──
     def startup(self) -> None:
@@ -97,7 +104,7 @@ class Trader:
                 logger.info("Discord 조회 봇 스레드 기동")
             except Exception:  # noqa: BLE001 — 봇 기동 실패가 매매를 막지 않게
                 logger.exception("Discord 봇 기동 실패 — 매매는 계속 진행")
-        self.discord.info("🤖 트레이더 기동", f"환경={self.settings.kis_env}, 관심종목={self.settings.watch_codes}")
+        self.discord.info("🤖 트레이더 기동", f"환경={self.settings.kis_env}, 관심종목={self.watch_codes}")
         logger.info("기동 완료")
 
     def shutdown(self, reason: str = "") -> None:
@@ -151,7 +158,7 @@ class Trader:
 
     # ── 2) LLM 판단 → 가드레일 → 주문 ──
     def _run_decisions(self, snapshot: dict, state: AccountState) -> None:
-        for code in self.settings.watch_codes:
+        for code in self.watch_codes:
             decision, meta = self.decider.decide(snapshot, code)
             price = self._price(code)
             result = guardrails.check(decision, state, self.guard_cfg, price)
@@ -246,7 +253,7 @@ class Trader:
 
                 today = datetime.now().strftime("%Y-%m-%d")
                 try:
-                    snapshot = build_snapshot(self.broker, self.settings.watch_codes)
+                    snapshot = build_snapshot(self.broker, self.watch_codes)
                 except BrokerError as exc:
                     logger.error("스냅샷 실패: %s", exc)
                     self._sleep(15)

@@ -16,6 +16,10 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS watchlist (
+    code TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -131,6 +135,24 @@ class Journal:
                  note=excluded.note""",
             (trade_date, realized_pnl, trades, total_eval, buy_hold_pnl, note),
         )
+
+    # ── 관심종목 관리 ──
+    def add_watch(self, code: str) -> None:
+        self._exec(
+            "INSERT OR IGNORE INTO watchlist (code, added_at) VALUES (?, ?)",
+            (code, _now()),
+        )
+
+    def remove_watch(self, code: str) -> None:
+        self._exec("DELETE FROM watchlist WHERE code = ?", (code,))
+
+    def get_watch_codes(self) -> list[str]:
+        try:
+            cur = self._conn.execute("SELECT code FROM watchlist ORDER BY added_at")
+            return [row[0] for row in cur.fetchall()]
+        except sqlite3.Error as exc:
+            logger.error("관심종목 조회 실패: %s", exc)
+            return []
 
     def count_today_orders(self, trade_date: str) -> int:
         """당일 주문 건수(거래 횟수 가드레일 보조용)."""
