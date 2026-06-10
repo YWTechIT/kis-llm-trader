@@ -49,16 +49,15 @@ _INCLUDE_ETF_ARGS = ("etf", "전체", "all")
 
 
 class TraderBot:
-    def __init__(self, token: str, broker, *,
-                 allowed_channel_ids: frozenset[int] = frozenset(),
+    def __init__(self, token: str, broker, *, allowed_channel_ids: list[int] | None = None,
                  is_paper: bool = False) -> None:
         """token: 봇 토큰(크리덴셜). broker: 인증된 Broker 인스턴스(매매 루프와 공유).
-        allowed_channel_ids: 조회 허용 채널 ID 집합(비면 전체 허용). 여러 채널 지원.
+        allowed_channel_ids: 조회 허용 채널 ID 목록(비어 있으면 전체 허용).
         is_paper: 모의/실제 라벨 표기용.
         """
         self._token = token
         self._broker = broker
-        self._allowed_channel_ids = allowed_channel_ids
+        self._allowed_channel_ids = allowed_channel_ids or []
         self._is_paper = is_paper
         self._thread: threading.Thread | None = None
 
@@ -86,7 +85,7 @@ class TraderBot:
             # 봇/자기 메시지 무시 → 무한루프 방지
             if message.author.bot:
                 return
-            # 지정 채널 외 무시(계좌 정보 유출 방지). 비면 전체 허용.
+            # 지정 채널 외 무시(계좌 정보 유출 방지)
             if self._allowed_channel_ids and message.channel.id not in self._allowed_channel_ids:
                 return
             content = (message.content or "").strip()
@@ -178,38 +177,53 @@ class TraderBot:
         if not rows:
             embed.description = "순위 데이터가 없습니다(장중에만 제공)."
             return embed
-        embed.description = "\n".join(
-            f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
-            f"{r['price']:,}원  {r['change_pct']:+.2f}%"
-            for r in rows
-        )
+        lines = []
+        for r in rows:
+            vol = r.get("volume", 0) or 0
+            vol_str = f"{vol // 10_000:,}만주" if vol >= 10_000 else f"{vol:,}주"
+            lines.append(
+                f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
+                f"{r['price']:,}원  {r['change_pct']:+.2f}%  {vol_str}"
+            )
+        embed.description = "\n".join(lines)
         # ETF 포함/제외를 토글할 수 있음을 항상 안내(현재 상태의 반대 명령을 제시)
         hint = "ETF 제외: `!순위`" if include_etf else "ETF 포함: `!순위 etf`"
         embed.set_footer(text=f"{self._env_tag} · {hint}")
         return embed
 
     @staticmethod
-    def _rank_lines(rows: list[dict]) -> str:
-        """순위 리스트를 임베드 필드 본문 문자열로. 빈 응답이면 안내 문구.
-
-        임베드 필드는 1024자 제한 → TOP 10이면 충분히 안 넘지만 안전하게 자른다.
-        """
+    def _vol_rank_lines(rows: list[dict]) -> str:
+        """거래량 순위 필드 본문. 종목명/코드와 수치를 2줄로 나눠 가독성을 높인다."""
         if not rows:
             return "데이터 없음(장중에만 제공)"
-        text = "\n".join(
+        lines = []
+        for r in rows:
+            vol = r.get("volume", 0) or 0
+            vol_str = f"{vol // 10_000:,}만주" if vol >= 10_000 else f"{vol:,}주"
+            lines.append(
+                f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
+                f"{r['price']:,}원  {r['change_pct']:+.2f}%  {vol_str}"
+            )
+        return "\n".join(lines)[:1024]
+
+    @staticmethod
+    def _flt_rank_lines(rows: list[dict]) -> str:
+        """등락률 순위 필드 본문. 거래량 제외하고 1줄로 표시."""
+        if not rows:
+            return "데이터 없음(장중에만 제공)"
+        return "\n".join(
             f"`{r['rank']:>2}` **{r['name']}** ({r['code']})  "
             f"{r['price']:,}원  {r['change_pct']:+.2f}%"
             for r in rows
-        )
-        return text[:1024]
+        )[:1024]
 
     def _combined_rank_embed(self, vol_rows: list[dict], flt_rows: list[dict],
                              include_etf: bool = False) -> discord.Embed:
         """거래량 + 등락률 순위를 한 임베드에 두 필드로 함께 표시."""
         etf_tag = "ETF 포함" if include_etf else "ETF 제외"
         embed = self._base(f"📈 순위 TOP 10 ({etf_tag})", _COLOR_INFO)
-        embed.add_field(name="📊 거래량 순위", value=self._rank_lines(vol_rows), inline=False)
-        embed.add_field(name="🚀 등락률 순위", value=self._rank_lines(flt_rows), inline=False)
+        embed.add_field(name="📊 거래량 순위", value=self._vol_rank_lines(vol_rows), inline=False)
+        embed.add_field(name="🚀 등락률 순위", value=self._flt_rank_lines(flt_rows), inline=False)
         hint = "ETF 제외: `!순위`" if include_etf else "ETF 포함: `!순위 etf`"
         embed.set_footer(text=f"{self._env_tag} · {hint}")
         return embed
