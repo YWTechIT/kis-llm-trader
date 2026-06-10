@@ -67,21 +67,14 @@ def _get_int(name: str, default: int) -> int:
         raise ConfigError(f"환경변수 '{name}' 는 정수여야 합니다: {exc}")
 
 
-def _get_int_set(name: str) -> frozenset[int]:
-    """콤마 구분 정수 ID 목록을 파싱. 빈 값이면 빈 집합(=전체 허용 의미)."""
+def _get_int_list(name: str) -> list[int]:
     raw = os.environ.get(name, "").strip()
     if not raw:
-        return frozenset()
-    ids: set[int] = set()
-    for tok in raw.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        try:
-            ids.add(int(tok))
-        except ValueError as exc:
-            raise ConfigError(f"환경변수 '{name}' 의 채널 ID는 정수여야 합니다: {exc}")
-    return frozenset(ids)
+        return []
+    try:
+        return [int(v.strip()) for v in raw.split(",") if v.strip()]
+    except ValueError as exc:
+        raise ConfigError(f"환경변수 '{name}' 는 쉼표로 구분된 정수 목록이어야 합니다: {exc}")
 
 
 @dataclass(frozen=True)
@@ -98,7 +91,7 @@ class Settings:
     # 양방향 조회 봇(잔고/보유/체결/매수가능 질의 응답). 비활성 시 토큰 불필요.
     discord_bot_enabled: bool
     discord_bot_token: str      # 크리덴셜 — 절대 로깅/노출 금지
-    discord_bot_channel_ids: frozenset[int]  # 조회 허용 채널 ID 집합(비면 전체 허용). 콤마 구분 다중 지원.
+    discord_bot_channel_ids: list[int]  # 조회 허용 채널 ID 목록(비어 있으면 전체 허용)
     # 로깅
     log_level: str              # 파일 로그 레벨(DEBUG/INFO/...). 콘솔은 INFO 고정.
     log_file: str               # 상세 로그 파일 경로(로테이션). 비면 파일 로그 비활성.
@@ -196,7 +189,7 @@ def load_settings() -> Settings:
         discord_tradelog_url=os.environ.get("DISCORD_TRADELOG_URL", "").strip(),
         discord_bot_enabled=bot_enabled,
         discord_bot_token=bot_token,
-        discord_bot_channel_ids=_get_int_set("DISCORD_BOT_CHANNEL_ID"),
+        discord_bot_channel_ids=_get_int_list("DISCORD_BOT_CHANNEL_ID"),
         log_level=os.environ.get("LOG_LEVEL", "DEBUG").strip().upper() or "DEBUG",
         log_file=os.environ.get("LOG_FILE", "logs/trader.log").strip(),
         watch_codes=watch_codes,

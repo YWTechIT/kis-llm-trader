@@ -483,10 +483,13 @@ class Broker:
             fid_rsfl_rate1="",
             fid_rsfl_rate2="",
         )
-        return self._parse_rank_df(df, top, exclude_etf, amt_key=None)
+        return self._parse_rank_df(df, top, exclude_etf, amt_key=None,
+                                   sort_by="change_pct", ascending=False)
 
     def _parse_rank_df(self, df: Any, top: int, exclude_etf: bool,
-                       *, amt_key: Optional[str]) -> list[dict]:
+                       *, amt_key: Optional[str],
+                       sort_by: Optional[str] = None,
+                       ascending: bool = False) -> list[dict]:
         """순위 DataFrame을 정규화 리스트로. ETF 필터 후 rank를 1..N으로 재번호한다."""
         if not isinstance(df, pd.DataFrame) or df.empty:
             return []
@@ -498,7 +501,7 @@ class Broker:
             if not code or (exclude_etf and _looks_like_etf(name)):
                 continue
             out.append({
-                "rank": len(out) + 1,
+                "rank": 0,
                 "code": code,
                 "name": name,
                 "price": _to_int(row.get("stck_prpr")),
@@ -506,8 +509,11 @@ class Broker:
                 "volume": _to_int(row.get("acml_vol")),
                 "trade_amt": _to_int(row.get(amt_key)) if amt_key else 0,
             })
-            if len(out) >= top:
-                break
+        if sort_by:
+            out.sort(key=lambda x: x[sort_by], reverse=not ascending)
+        out = out[:top]
+        for i, item in enumerate(out):
+            item["rank"] = i + 1
         return out
 
     def is_trading_day(self, date: str = "") -> bool:
